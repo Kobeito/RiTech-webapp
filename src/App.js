@@ -198,16 +198,31 @@ export default function ElectroManager() {
   // Auth & Persistence Setup
   useEffect(() => {
     const initApp = async () => {
+      // Tentativo di abilitare la persistenza offline
       try { await enableIndexedDbPersistence(db); } catch (err) { console.log("Persistence:", err.code); }
+      // RIMOSSO: Login anonimo automatico. Ora si aspetta l'input utente.
     };
     initApp();
     
+    // Listen for auth state changes (Login/Logout)
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser) setView('dashboard');
+      if (currentUser) {
+        setView('dashboard');
+      }
     });
     return () => unsubscribe();
   }, []);
+
+  // --- HELPER: Auth Check ---
+  // Verifica se l'utente è loggato, se no chiede di rifarlo. Non crea più utenti anonimi.
+  const getAuthenticatedUser = () => {
+    if (auth.currentUser) return auth.currentUser;
+    // Se siamo qui, la sessione è scaduta o non valida
+    setAuthError("Sessione scaduta. Effettua nuovamente il login.");
+    setUser(null); // Questo porterà alla view di login
+    return null;
+  };
 
   // --- Listeners ---
   useEffect(() => {
@@ -276,16 +291,28 @@ export default function ElectroManager() {
     e.preventDefault();
     setAuthError('');
     try {
-      if (isRegistering) await createUserWithEmailAndPassword(auth, email, password);
-      else await signInWithEmailAndPassword(auth, email, password);
+      if (isRegistering) {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
     } catch (err) {
-      setAuthError('Errore di accesso: ' + err.code);
+      console.error(err);
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        setAuthError('Email o password non validi.');
+      } else if (err.code === 'auth/email-already-in-use') {
+        setAuthError('Email già registrata.');
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError('Password troppo debole (min 6 caratteri).');
+      } else {
+        setAuthError('Errore di accesso: ' + err.code);
+      }
     }
   };
 
   const handleLogout = async () => {
     await signOut(auth);
-    setRawClients([]); setRawSites([]); setRawJobs([]);
+    setRawClients([]); setRawSites([]); setRawJobs([]); // Clear local data on logout
   };
 
   // --- DATA EXPORT / IMPORT HANDLERS ---
@@ -344,11 +371,8 @@ export default function ElectroManager() {
         const basePath = `artifacts/${appId}/users/${user.uid}`;
         let count = 0;
 
-        // Helper to add to batch
-        // NOTE: We use the ID from the backup to overwrite/merge if it exists, ensuring no duplicates on multiple imports of same file
         const addToBatch = (collectionName, items) => {
           items.forEach(item => {
-            // Remove ID from data to avoid duplicating it inside the doc
             const { id, ...docData } = item;
             const docRef = doc(db, basePath, collectionName, id);
             batch.set(docRef, docData, { merge: true });
@@ -379,11 +403,13 @@ export default function ElectroManager() {
   };
   
   const handleSave = async () => {
-    if (!user) return;
     setIsSaving(true);
+    const currentUser = getAuthenticatedUser();
+    if (!currentUser) { setIsSaving(false); return; }
+
     let collectionName = view; 
     if (view === 'dashboard') collectionName = 'clients'; 
-    const collRef = collection(db, 'artifacts', appId, 'users', user.uid, collectionName);
+    const collRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, collectionName);
     const payload = { ...formData, createdAt: modalMode === 'add' ? serverTimestamp() : undefined, status: formData.status || 'todo' };
     if (modalMode === 'edit') delete payload.createdAt;
     if (view === 'sites' && modalMode === 'add') { payload.clientId = selectedClient.id; payload.clientName = selectedClient.name; }
@@ -391,7 +417,7 @@ export default function ElectroManager() {
 
     try {
       if (modalMode === 'add') await addDoc(collRef, payload);
-      else await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, formData.id), payload);
+      else await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, collectionName, formData.id), payload);
       setIsModalOpen(false); setFormData({});
     } catch (e) { console.error(e); alert("Errore nel salvataggio. Riprova."); } 
     finally { setIsSaving(false); }
@@ -405,32 +431,48 @@ export default function ElectroManager() {
   };
 
   const executeDelete = async () => {
-    if (!deleteConfirm.id || !user) return;
+    if (!deleteConfirm.id) return;
+    const currentUser = getAuthenticatedUser();
+    if (!currentUser) return;
+
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, deleteConfirm.collection, deleteConfirm.id));
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, deleteConfirm.collection, deleteConfirm.id));
+      
       if (deleteConfirm.collection === 'clients') {
         const sitesToDelete = rawSites.filter(s => s.clientId === deleteConfirm.id);
         for (const s of sitesToDelete) {
-           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'sites', s.id));
+           await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'sites', s.id));
            const jobsToDelete = rawJobs.filter(j => j.siteId === s.id);
-           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
+           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
         }
       }
       else if (deleteConfirm.collection === 'sites') {
         const jobsToDelete = rawJobs.filter(j => j.siteId === deleteConfirm.id);
-        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
+        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
       }
+
       setDeleteConfirm({ isOpen: false, collection: null, id: null, title: '' }); 
-    } catch (err) { console.error(err); alert("Errore durante l'eliminazione."); }
+    } catch (err) {
+      console.error(err);
+      alert("Errore durante l'eliminazione.");
+    }
   };
   
   const handleUpdateStatus = async (jobId, newStatus) => {
-    if (!user) return;
+    const currentUser = getAuthenticatedUser();
+    if (!currentUser) return;
+
     if (newStatus === 'done') {
       const job = rawJobs.find(j => j.id === jobId);
       if (!job.endDate) { alert("⚠️ Data Fine Lavori obbligatoria per completare."); return; }
     }
-    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', jobId), { status: newStatus });
+    
+    try {
+      await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', jobId), { status: newStatus });
+    } catch (e) {
+      console.error(e);
+      alert("Errore di connessione. Riprova.");
+    }
   };
 
   const jumpToJob = (job) => {
@@ -441,73 +483,55 @@ export default function ElectroManager() {
 
   // --- Views ---
 
+  // LOGIN SCREEN
   if (!user) {
     return (
       <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white animate-in fade-in">
         <div className="bg-blue-600 p-4 rounded-full mb-6 shadow-lg shadow-blue-500/50"><Lock size={48} /></div>
         <h1 className="text-3xl font-bold mb-2">{APP_NAME}</h1>
         <p className="text-slate-400 mb-8">{isRegistering ? 'Crea nuovo account' : 'Accedi al gestionale'}</p>
+        
         <form onSubmit={handleAuth} className="w-full max-w-xs space-y-4">
           <div className="bg-slate-800 rounded-xl p-1 border border-slate-700">
-            <div className="flex items-center px-3 border-b border-slate-700/50"><Mail size={18} className="text-slate-500" /><input type="email" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-            <div className="flex items-center px-3"><Key size={18} className="text-slate-500" /><input type="password" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+            <div className="flex items-center px-3 border-b border-slate-700/50">
+              <Mail size={18} className="text-slate-500" />
+              <input 
+                type="email" 
+                required
+                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
+                placeholder="Email" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center px-3">
+              <Key size={18} className="text-slate-500" />
+              <input 
+                type="password" 
+                required
+                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
+                placeholder="Password" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
           </div>
+
           {authError && <div className="text-red-400 text-sm text-center bg-red-900/30 p-2 rounded-lg border border-red-900/50">{authError}</div>}
+
           <Button type="submit" className="w-full py-4 text-lg font-bold">{isRegistering ? 'Registrati' : 'Accedi'}</Button>
-          <button type="button" onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }} className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors">{isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}</button>
+          
+          <button 
+            type="button"
+            onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
+            className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors"
+          >
+            {isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}
+          </button>
         </form>
       </div>
     );
   }
-
-  const renderSettingsView = () => (
-    <div className="space-y-6 pb-24 animate-in slide-in-from-right duration-200 bg-white min-h-screen">
-      <div className="bg-slate-900 sticky top-0 z-10 p-4 border-b border-slate-800 flex items-center gap-3 text-white">
-        <button onClick={() => navigateTo('dashboard')} className="p-2 -ml-2 hover:bg-slate-800 rounded-full"><ArrowLeft size={20} /></button>
-        <h2 className="font-bold text-lg">Impostazioni</h2>
-      </div>
-      <div className="p-4 space-y-6">
-        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 text-center">
-          <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600"><User size={32} /></div>
-          <h3 className="font-bold text-lg text-slate-800">Utente Connesso</h3>
-          <p className="text-slate-500 text-sm mb-6">{user.email}</p>
-          <Button onClick={handleLogout} className="w-full bg-red-50 text-red-600 hover:bg-red-100 shadow-none border border-red-200">Disconnetti</Button>
-        </div>
-
-        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="bg-indigo-100 p-2 rounded-full text-indigo-600"><Database size={20} /></div>
-            <h3 className="font-bold text-lg text-slate-800">Gestione Dati</h3>
-          </div>
-          <p className="text-sm text-slate-500 mb-6">Scarica una copia di backup dei tuoi dati o ripristina un backup precedente.</p>
-          
-          <div className="flex flex-col gap-3">
-            <button 
-              onClick={handleExportData}
-              className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 transition-colors border border-blue-100"
-            >
-              <Download size={18} /> Scarica Backup Dati (.json)
-            </button>
-
-            <div className="relative">
-               <input 
-                 type="file" 
-                 accept=".json"
-                 onChange={handleImportData}
-                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                 disabled={isImporting}
-               />
-               <button className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-slate-50 text-slate-700 font-bold hover:bg-slate-100 transition-colors border border-slate-200">
-                 {isImporting ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
-                 {isImporting ? "Ripristino in corso..." : "Ripristina da Backup"}
-               </button>
-            </div>
-            <p className="text-[10px] text-center text-slate-400 mt-1">Il ripristino aggiungerà i dati mancanti o aggiornerà quelli esistenti.</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 
   const renderDashboardView = () => (
     <div className="space-y-6 pb-24 animate-in fade-in">
@@ -557,6 +581,55 @@ export default function ElectroManager() {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+
+  const renderSettingsView = () => (
+    <div className="space-y-6 pb-24 animate-in slide-in-from-right duration-200 bg-white min-h-screen">
+      <div className="bg-slate-900 sticky top-0 z-10 p-4 border-b border-slate-800 flex items-center gap-3 text-white">
+        <button onClick={() => navigateTo('dashboard')} className="p-2 -ml-2 hover:bg-slate-800 rounded-full"><ArrowLeft size={20} /></button>
+        <h2 className="font-bold text-lg">Impostazioni</h2>
+      </div>
+      <div className="p-4 space-y-6">
+        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 text-center">
+          <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600"><User size={32} /></div>
+          <h3 className="font-bold text-lg text-slate-800">Utente Connesso</h3>
+          <p className="text-slate-500 text-sm mb-6">{user.email || 'Utente Ospite (Anonimo)'}</p>
+          <Button onClick={handleLogout} className="w-full bg-red-50 text-red-600 hover:bg-red-100 shadow-none border border-red-200">Disconnetti</Button>
+        </div>
+
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="bg-indigo-100 p-2 rounded-full text-indigo-600"><Database size={20} /></div>
+            <h3 className="font-bold text-lg text-slate-800">Gestione Dati</h3>
+          </div>
+          <p className="text-sm text-slate-500 mb-6">Scarica una copia di backup dei tuoi dati o ripristina un backup precedente.</p>
+          
+          <div className="flex flex-col gap-3">
+            <button 
+              onClick={handleExportData}
+              className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 transition-colors border border-blue-100"
+            >
+              <Download size={18} /> Scarica Backup Dati (.json)
+            </button>
+
+            <div className="relative">
+               <input 
+                 type="file" 
+                 accept=".json"
+                 onChange={handleImportData}
+                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                 disabled={isImporting}
+               />
+               <button className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-slate-50 text-slate-700 font-bold hover:bg-slate-100 transition-colors border border-slate-200">
+                 {isImporting ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
+                 {isImporting ? "Ripristino in corso..." : "Ripristina da Backup"}
+               </button>
+            </div>
+            <p className="text-[10px] text-center text-slate-400 mt-1">Il ripristino aggiungerà i dati mancanti o aggiornerà quelli esistenti.</p>
+          </div>
+        </div>
       </div>
     </div>
   );
