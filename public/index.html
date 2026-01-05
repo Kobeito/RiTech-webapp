@@ -1,53 +1,39 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="it">
   <head>
     <meta charset="utf-8" />
-    <meta
-      name="viewport"
-      content="width=device-width, initial-scale=1, shrink-to-fit=no"
-    />
-    <meta name="theme-color" content="#000000" />
-    <!--
-      manifest.json provides metadata used when your web app is added to the
-      homescreen on Android. See https://developers.google.com/web/fundamentals/engage-and-retain/web-app-manifest/
-    -->
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
-    <link rel="shortcut icon" href="%PUBLIC_URL%/favicon.ico" />
-    <!--
-      Notice the use of %PUBLIC_URL% in the tags above.
-      It will be replaced with the URL of the `public` folder during the build.
-      Only files inside the `public` folder can be referenced from the HTML.
+    <!-- Icona di base per browser desktop -->
+    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    
+    <!-- 1. BLOCCA LO ZOOM: Fondamentale per sembrare un'app nativa su tutti i dispositivi -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    
+    <!-- Colore della barra di stato di Chrome su Android -->
+    <meta name="theme-color" content="#1e293b" />
+    <meta name="description" content="Gestionale Elettricisti" />
 
-      Unlike "/favicon.ico" or "favicon.ico", "%PUBLIC_URL%/favicon.ico" will
-      work correctly both with client-side routing and a non-root public URL.
-      Learn how to configure a non-root public URL by running `npm run build`.
-    -->
-    <title>React App</title>
+    <!-- 2. CONFIGURAZIONE ANDROID (PWA Standard) -->
+    <!-- Il file manifest contiene tutte le info per Android: icone, nome app, avvio a tutto schermo -->
+    <link rel="manifest" href="/manifest.json" />
+    
+    <!-- Icone ad alta risoluzione per Android/Chrome (Backup se il manifest tarda a caricare) -->
+    <link rel="icon" type="image/png" sizes="192x192" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
+    <link rel="icon" type="image/png" sizes="512x512" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
+
+    <!-- 3. CONFIGURAZIONE APPLE (iOS) -->
+    <!-- Apple richiede questi tag specifici perché non legge tutto dal manifest -->
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="ElectroMgr">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
+
+    <!-- 4. GRAFICA (Tailwind CSS) -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-      /* Nasconde il pulsante Open Sandbox e footer */
-      #csb-status-root,
-      a[href*="codesandbox"],
-      iframe[style*="position: fixed"] {
-        display: none !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-      }
-    </style>
+
+    <title>ElectroManager</title>
   </head>
-
   <body>
-    <noscript> You need to enable JavaScript to run this app. </noscript>
+    <noscript>È necessario abilitare JavaScript per usare questa app.</noscript>
     <div id="root"></div>
-    <!--
-      This HTML file is a template.
-      If you open it directly in the browser, you will see an empty page.
-
-      You can add webfonts, meta tags, or analytics to this file.
-      The build step will place the bundled scripts into the <body> tag.
-
-      To begin the development, run `npm start` or `yarn start`.
-      To create a production bundle, use `npm run build` or `yarn build`.
-    -->
   </body>
 </html>
