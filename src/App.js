@@ -33,13 +33,15 @@ import {
   Printer,
   Settings,
   AlertTriangle,
-  RefreshCw 
+  RefreshCw,
+  Mail 
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
   getAuth, 
-  signInWithCustomToken, 
-  signInAnonymously, 
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  signOut,
   onAuthStateChanged 
 } from 'firebase/auth';
 import { 
@@ -57,13 +59,18 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration ---
-
-// 1. PER L'ANTEPRIMA QUI IN CHAT (Lascia questa riga attiva per vedere l'app ora)
+// ⚠️ IMPORTANTE: Sostituisci questo blocco con le tue chiavi vere!
+/* const firebaseConfig = {
+  apiKey: "...",
+  authDomain: "...",
+  projectId: "...",
+  storageBucket: "...",
+  messagingSenderId: "...",
+  appId: "..."
+};
+*/
+// Per l'anteprima in chat:
 // const firebaseConfig = JSON.parse(__firebase_config);
-
-// 2. PER VERCEL / PUBBLICAZIONE (Quando carichi su GitHub/Vercel):
-// -> Commenta la riga sopra (metti // davanti)
-// -> Scommenta il blocco qui sotto (togli /* e */) e inserisci le tue chiavi vere
 
 const firebaseConfig = {
   apiKey: "AIzaSyAOwypL0k7iF1IMDzW5f83ZXu_UjCvKRAE",
@@ -77,10 +84,12 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'electro-manager-app';
+
+// ID App Fisso per stabilità
+const appId = "electro-manager-pro";
 
 // --- APP CONFIGURATION ---
-const APP_NAME = "ElectroManager"; // <--- MODIFICA QUI IL NOME DELL'APP
+const APP_NAME = "ElectroManager"; 
 
 // --- Constants & Utilities ---
 const JOB_TYPES = [
@@ -156,15 +165,17 @@ const Card = ({ children, onClick, className = '' }) => (
 // --- Main App ---
 export default function ElectroManager() {
   const [user, setUser] = useState(null);
-  const [isAuthenticated, setIsAuthenticated] = useState(false); 
-  const [pinInput, setPinInput] = useState('');
+  
+  // Auth State
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [authError, setAuthError] = useState('');
   
   const [view, setView] = useState('dashboard');
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedSite, setSelectedSite] = useState(null);
   const [reportType, setReportType] = useState('materials'); 
-  
-  const [newPin, setNewPin] = useState('');
   
   const [rawClients, setRawClients] = useState([]);
   const [rawSites, setRawSites] = useState([]);
@@ -178,50 +189,34 @@ export default function ElectroManager() {
 
   const [deleteConfirm, setDeleteConfirm] = useState({ isOpen: false, collection: null, id: null, title: '' });
 
-  // Auth & Persistence
+  // Auth & Persistence Setup
   useEffect(() => {
-    const initAuth = async () => {
-      // Tentativo di abilitare la persistenza offline
-      try {
-        await enableIndexedDbPersistence(db);
-      } catch (err) {
-        console.log("Persistence not enabled:", err.code);
-      }
-
-      if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-        await signInWithCustomToken(auth, __initial_auth_token);
-      } else {
-        await signInAnonymously(auth);
-      }
+    const initApp = async () => {
+      try { await enableIndexedDbPersistence(db); } catch (err) { console.log("Persistence:", err.code); }
     };
-    initAuth();
-    return onAuthStateChanged(auth, setUser);
+    initApp();
+    
+    // Listen for auth state changes (Login/Logout)
+    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        setView('dashboard'); // Reset view on login
+      }
+    });
+    return () => unsubscribe();
   }, []);
-
-  // --- HELPER: Re-connect & Auth Check ---
-  const getAuthenticatedUser = async () => {
-    if (auth.currentUser) return auth.currentUser;
-    try {
-      console.log("Tentativo riconnessione sessione...");
-      const cred = await signInAnonymously(auth);
-      return cred.user;
-    } catch (e) {
-      console.error("Errore riconnessione:", e);
-      alert("Connessione persa. Controlla internet o riavvia l'app.");
-      return null;
-    }
-  };
 
   // --- Listeners ---
   useEffect(() => {
     if (!user) return;
+    // Path: artifacts/electro-manager-pro/users/{UID}/...
     const unsubClients = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'clients'), (snap) => setRawClients(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Sync error clients", err));
     const unsubSites = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'sites'), (snap) => setRawSites(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Sync error sites", err));
     const unsubJobs = onSnapshot(collection(db, 'artifacts', appId, 'users', user.uid, 'jobs'), (snap) => setRawJobs(snap.docs.map(d => ({ id: d.id, ...d.data() }))), (err) => console.error("Sync error jobs", err));
     return () => { unsubClients(); unsubSites(); unsubJobs(); };
   }, [user]);
 
-  // --- Derived State ---
+  // --- Derived State (Sorting & Filtering) ---
   const validSites = useMemo(() => rawSites.filter(site => rawClients.some(client => client.id === site.clientId)), [rawSites, rawClients]);
   const validJobs = useMemo(() => rawJobs.filter(job => validSites.some(site => site.id === job.siteId)), [rawJobs, validSites]);
 
@@ -274,19 +269,33 @@ export default function ElectroManager() {
   const priorityJobsList = validJobs.filter(j => j.isPriority && j.status !== 'done' && j.status !== 'cancelled').sort((a, b) => (a.createdAt?.seconds || 0) - (b.createdAt?.seconds || 0));
 
   // --- Handlers ---
-  const handleLogin = () => {
-    const storedPin = localStorage.getItem('electro_manager_pin') || '1234';
-    if (pinInput === storedPin) { setIsAuthenticated(true); setPinInput(''); } 
-    else { alert("PIN Errato. Se è il primo accesso prova 1234"); }
+  
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError('');
+    try {
+      if (isRegistering) {
+        await createUserWithEmailAndPassword(auth, email, password);
+      } else {
+        await signInWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      console.error(err);
+      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+        setAuthError('Email o password non validi.');
+      } else if (err.code === 'auth/email-already-in-use') {
+        setAuthError('Email già registrata.');
+      } else if (err.code === 'auth/weak-password') {
+        setAuthError('Password troppo debole (min 6 caratteri).');
+      } else {
+        setAuthError('Errore di accesso: ' + err.code);
+      }
+    }
   };
 
-  const handleLogout = () => { setIsAuthenticated(false); setView('dashboard'); };
-
-  const handleChangePin = () => {
-    if (newPin.length < 4) { alert("Il PIN deve essere di almeno 4 cifre."); return; }
-    localStorage.setItem('electro_manager_pin', newPin);
-    alert("PIN modificato con successo!");
-    setNewPin('');
+  const handleLogout = async () => {
+    await signOut(auth);
+    setRawClients([]); setRawSites([]); setRawJobs([]); // Clear local data on logout
   };
 
   const navigateTo = (newView, client = null, site = null) => {
@@ -294,13 +303,11 @@ export default function ElectroManager() {
   };
   
   const handleSave = async () => {
+    if (!user) return;
     setIsSaving(true);
-    const currentUser = await getAuthenticatedUser();
-    if (!currentUser) { setIsSaving(false); return; }
-
     let collectionName = view; 
     if (view === 'dashboard') collectionName = 'clients'; 
-    const collRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, collectionName);
+    const collRef = collection(db, 'artifacts', appId, 'users', user.uid, collectionName);
     const payload = { ...formData, createdAt: modalMode === 'add' ? serverTimestamp() : undefined, status: formData.status || 'todo' };
     if (modalMode === 'edit') delete payload.createdAt;
     if (view === 'sites' && modalMode === 'add') { payload.clientId = selectedClient.id; payload.clientName = selectedClient.name; }
@@ -308,9 +315,9 @@ export default function ElectroManager() {
 
     try {
       if (modalMode === 'add') await addDoc(collRef, payload);
-      else await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, collectionName, formData.id), payload);
+      else await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, formData.id), payload);
       setIsModalOpen(false); setFormData({});
-    } catch (e) { console.error(e); alert("Errore nel salvataggio. Riprova tra un istante."); } 
+    } catch (e) { console.error(e); alert("Errore nel salvataggio. Riprova."); } 
     finally { setIsSaving(false); }
   };
 
@@ -322,48 +329,37 @@ export default function ElectroManager() {
   };
 
   const executeDelete = async () => {
-    if (!deleteConfirm.id) return;
-    const currentUser = await getAuthenticatedUser();
-    if (!currentUser) return;
-
+    if (!deleteConfirm.id || !user) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, deleteConfirm.collection, deleteConfirm.id));
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, deleteConfirm.collection, deleteConfirm.id));
       
       if (deleteConfirm.collection === 'clients') {
         const sitesToDelete = rawSites.filter(s => s.clientId === deleteConfirm.id);
         for (const s of sitesToDelete) {
-           await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'sites', s.id));
+           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'sites', s.id));
            const jobsToDelete = rawJobs.filter(j => j.siteId === s.id);
-           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
+           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
         }
       }
       else if (deleteConfirm.collection === 'sites') {
         const jobsToDelete = rawJobs.filter(j => j.siteId === deleteConfirm.id);
-        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
+        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
       }
 
       setDeleteConfirm({ isOpen: false, collection: null, id: null, title: '' }); 
     } catch (err) {
       console.error(err);
-      alert("Errore durante l'eliminazione. Riprova.");
+      alert("Errore durante l'eliminazione.");
     }
   };
   
   const handleUpdateStatus = async (jobId, newStatus) => {
-    const currentUser = await getAuthenticatedUser();
-    if (!currentUser) return;
-
+    if (!user) return;
     if (newStatus === 'done') {
       const job = rawJobs.find(j => j.id === jobId);
       if (!job.endDate) { alert("⚠️ Data Fine Lavori obbligatoria per completare."); return; }
     }
-    
-    try {
-      await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', jobId), { status: newStatus });
-    } catch (e) {
-      console.error(e);
-      alert("Errore di connessione. Riprova.");
-    }
+    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', jobId), { status: newStatus });
   };
 
   const jumpToJob = (job) => {
@@ -374,17 +370,52 @@ export default function ElectroManager() {
 
   // --- Views ---
 
-  if (!isAuthenticated) {
+  // LOGIN SCREEN
+  if (!user) {
     return (
       <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white animate-in fade-in">
         <div className="bg-blue-600 p-4 rounded-full mb-6 shadow-lg shadow-blue-500/50"><Lock size={48} /></div>
         <h1 className="text-3xl font-bold mb-2">{APP_NAME}</h1>
-        <p className="text-slate-400 mb-8">Accesso Sicuro</p>
-        <div className="w-full max-w-xs space-y-4">
-          <input type="password" pattern="[0-9]*" inputMode="numeric" className="w-full text-center text-2xl tracking-widest bg-slate-800 border border-slate-700 rounded-xl py-4 focus:ring-2 focus:ring-blue-500 outline-none text-white" placeholder="P I N" maxLength={4} value={pinInput} onChange={(e) => setPinInput(e.target.value)} />
-          <Button onClick={handleLogin} className="w-full py-4 text-lg">Accedi</Button>
-          <p className="text-center text-xs text-slate-500 mt-4">PIN Default: 1234</p>
-        </div>
+        <p className="text-slate-400 mb-8">{isRegistering ? 'Crea nuovo account' : 'Accedi al gestionale'}</p>
+        
+        <form onSubmit={handleAuth} className="w-full max-w-xs space-y-4">
+          <div className="bg-slate-800 rounded-xl p-1 border border-slate-700">
+            <div className="flex items-center px-3 border-b border-slate-700/50">
+              <Mail size={18} className="text-slate-500" />
+              <input 
+                type="email" 
+                required
+                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
+                placeholder="Email" 
+                value={email} 
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div className="flex items-center px-3">
+              <Key size={18} className="text-slate-500" />
+              <input 
+                type="password" 
+                required
+                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
+                placeholder="Password" 
+                value={password} 
+                onChange={(e) => setPassword(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {authError && <div className="text-red-400 text-sm text-center bg-red-900/30 p-2 rounded-lg border border-red-900/50">{authError}</div>}
+
+          <Button type="submit" className="w-full py-4 text-lg font-bold">{isRegistering ? 'Registrati' : 'Accedi'}</Button>
+          
+          <button 
+            type="button"
+            onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
+            className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors"
+          >
+            {isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}
+          </button>
+        </form>
       </div>
     );
   }
@@ -448,14 +479,13 @@ export default function ElectroManager() {
         <h2 className="font-bold text-lg">Impostazioni</h2>
       </div>
       <div className="p-4">
-        <h3 className="font-bold text-lg mb-4 text-slate-800">Sicurezza</h3>
-        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200">
-          <label className="block text-sm font-medium text-slate-500 mb-2">Nuovo PIN Accesso</label>
-          <div className="flex gap-2">
-            <input type="text" pattern="[0-9]*" inputMode="numeric" maxLength={4} value={newPin} onChange={(e) => setNewPin(e.target.value)} className="flex-1 p-3 rounded-xl border border-slate-300 focus:border-blue-500 outline-none text-center tracking-widest text-lg" placeholder="####" />
-            <Button onClick={handleChangePin}>Salva</Button>
+        <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 text-center">
+          <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600">
+            <User size={32} />
           </div>
-          <p className="text-xs text-slate-400 mt-2">Il PIN viene salvato solo su questo dispositivo.</p>
+          <h3 className="font-bold text-lg text-slate-800">Utente Connesso</h3>
+          <p className="text-slate-500 text-sm mb-6">{user.email}</p>
+          <Button onClick={handleLogout} className="w-full bg-red-50 text-red-600 hover:bg-red-100 shadow-none border border-red-200">Disconnetti</Button>
         </div>
       </div>
     </div>
@@ -666,13 +696,35 @@ export default function ElectroManager() {
     </div>
   );
 
-  if (!user) return <div className="h-screen flex items-center justify-center text-slate-400 animate-pulse">Caricamento App...</div>;
+  if (view === 'login' || !user) {
+    return (
+      <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white animate-in fade-in">
+        <div className="bg-blue-600 p-4 rounded-full mb-6 shadow-lg shadow-blue-500/50"><Lock size={48} /></div>
+        <h1 className="text-3xl font-bold mb-2">{APP_NAME}</h1>
+        <p className="text-slate-400 mb-8">{isRegistering ? 'Crea nuovo account' : 'Accedi al gestionale'}</p>
+        <form onSubmit={handleAuth} className="w-full max-w-xs space-y-4">
+          <div className="bg-slate-800 rounded-xl p-1 border border-slate-700">
+            <div className="flex items-center px-3 border-b border-slate-700/50">
+              <Mail size={18} className="text-slate-500" />
+              <input type="email" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
+            </div>
+            <div className="flex items-center px-3">
+              <Key size={18} className="text-slate-500" />
+              <input type="password" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} />
+            </div>
+          </div>
+          {authError && <div className="text-red-400 text-sm text-center bg-red-900/30 p-2 rounded-lg border border-red-900/50">{authError}</div>}
+          <Button type="submit" className="w-full py-4 text-lg font-bold">{isRegistering ? 'Registrati' : 'Accedi'}</Button>
+          <button type="button" onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }} className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors">{isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}</button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900 pb-safe select-none">
       <div className="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative overflow-hidden">
         
-        {/* Modale Inserimento / Modifica */}
         {isModalOpen && (
           <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-end sm:items-center justify-center p-4 animate-in fade-in duration-200">
             <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl animate-in slide-in-from-bottom-10">
@@ -685,32 +737,17 @@ export default function ElectroManager() {
           </div>
         )}
 
-        {/* Modale Conferma Eliminazione */}
         {deleteConfirm.isOpen && (
           <div className="fixed inset-0 z-[60] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
             <div className="bg-white w-full max-w-sm rounded-2xl p-6 shadow-2xl animate-in zoom-in-95">
               <div className="flex flex-col items-center text-center mb-4">
-                <div className="bg-red-100 p-3 rounded-full mb-3 text-red-600">
-                  <AlertTriangle size={32} />
-                </div>
+                <div className="bg-red-100 p-3 rounded-full mb-3 text-red-600"><AlertTriangle size={32} /></div>
                 <h3 className="font-bold text-xl text-slate-900">Sei sicuro?</h3>
-                <p className="text-slate-500 mt-2 text-sm">
-                  Stai per eliminare <strong>{deleteConfirm.title}</strong>. Questa azione non può essere annullata.
-                </p>
+                <p className="text-slate-500 mt-2 text-sm">Stai per eliminare <strong>{deleteConfirm.title}</strong>. Questa azione non può essere annullata.</p>
               </div>
               <div className="flex gap-3 mt-6">
-                <button 
-                  onClick={() => setDeleteConfirm({ ...deleteConfirm, isOpen: false })}
-                  className="flex-1 py-3 rounded-xl border border-slate-200 text-slate-600 font-bold hover:bg-slate-50 transition-colors"
-                >
-                  Annulla
-                </button>
-                <button 
-                  onClick={executeDelete}
-                  className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 shadow-lg shadow-red-200 transition-colors"
-                >
-                  Elimina
-                </button>
+                <button onClick={() => setDeleteConfirm({ ...deleteConfirm, isOpen: false })} className="flex-1 py-3 rounded-xl border border-slate-200 text-slate-600 font-bold hover:bg-slate-50 transition-colors">Annulla</button>
+                <button onClick={executeDelete} className="flex-1 py-3 rounded-xl bg-red-600 text-white font-bold hover:bg-red-700 shadow-lg shadow-red-200 transition-colors">Elimina</button>
               </div>
             </div>
           </div>
