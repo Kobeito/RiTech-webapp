@@ -37,7 +37,9 @@ import {
   Mail,
   Download,
   Upload,
-  Database
+  Database,
+  ClipboardList,
+  AlertOctagon
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { 
@@ -180,7 +182,10 @@ export default function ElectroManager() {
   const [view, setView] = useState('dashboard');
   const [selectedClient, setSelectedClient] = useState(null);
   const [selectedSite, setSelectedSite] = useState(null);
-  const [reportType, setReportType] = useState('materials'); 
+  const [reportType, setReportType] = useState('execution'); // execution, materials, blocked, urgent
+  const [reportTimeframe, setReportTimeframe] = useState('all'); // all, month, year
+  
+  const [newPin, setNewPin] = useState('');
   
   const [rawClients, setRawClients] = useState([]);
   const [rawSites, setRawSites] = useState([]);
@@ -198,31 +203,16 @@ export default function ElectroManager() {
   // Auth & Persistence Setup
   useEffect(() => {
     const initApp = async () => {
-      // Tentativo di abilitare la persistenza offline
       try { await enableIndexedDbPersistence(db); } catch (err) { console.log("Persistence:", err.code); }
-      // RIMOSSO: Login anonimo automatico. Ora si aspetta l'input utente.
     };
     initApp();
     
-    // Listen for auth state changes (Login/Logout)
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (currentUser) {
-        setView('dashboard');
-      }
+      if (currentUser) setView('dashboard');
     });
     return () => unsubscribe();
   }, []);
-
-  // --- HELPER: Auth Check ---
-  // Verifica se l'utente è loggato, se no chiede di rifarlo. Non crea più utenti anonimi.
-  const getAuthenticatedUser = () => {
-    if (auth.currentUser) return auth.currentUser;
-    // Se siamo qui, la sessione è scaduta o non valida
-    setAuthError("Sessione scaduta. Effettua nuovamente il login.");
-    setUser(null); // Questo porterà alla view di login
-    return null;
-  };
 
   // --- Listeners ---
   useEffect(() => {
@@ -291,46 +281,25 @@ export default function ElectroManager() {
     e.preventDefault();
     setAuthError('');
     try {
-      if (isRegistering) {
-        await createUserWithEmailAndPassword(auth, email, password);
-      } else {
-        await signInWithEmailAndPassword(auth, email, password);
-      }
+      if (isRegistering) await createUserWithEmailAndPassword(auth, email, password);
+      else await signInWithEmailAndPassword(auth, email, password);
     } catch (err) {
-      console.error(err);
-      if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-        setAuthError('Email o password non validi.');
-      } else if (err.code === 'auth/email-already-in-use') {
-        setAuthError('Email già registrata.');
-      } else if (err.code === 'auth/weak-password') {
-        setAuthError('Password troppo debole (min 6 caratteri).');
-      } else {
-        setAuthError('Errore di accesso: ' + err.code);
-      }
+      setAuthError('Errore di accesso: ' + err.code);
     }
   };
 
   const handleLogout = async () => {
     await signOut(auth);
-    setRawClients([]); setRawSites([]); setRawJobs([]); // Clear local data on logout
+    setRawClients([]); setRawSites([]); setRawJobs([]);
   };
 
-  // --- DATA EXPORT / IMPORT HANDLERS ---
   const handleExportData = async () => {
     if (!user) return;
     try {
       const backupData = {
-        meta: {
-          app: APP_NAME,
-          date: new Date().toISOString(),
-          user: user.email,
-          version: "1.0"
-        },
-        clients: rawClients,
-        sites: rawSites,
-        jobs: rawJobs
+        meta: { app: APP_NAME, date: new Date().toISOString(), user: user.email, version: "1.0" },
+        clients: rawClients, sites: rawSites, jobs: rawJobs
       };
-
       const dataStr = JSON.stringify(backupData, null, 2);
       const blob = new Blob([dataStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
@@ -340,37 +309,22 @@ export default function ElectroManager() {
       link.click();
       URL.revokeObjectURL(url);
       alert("Backup scaricato correttamente!");
-    } catch (e) {
-      console.error(e);
-      alert("Errore durante l'esportazione dei dati.");
-    }
+    } catch (e) { console.error(e); alert("Errore durante l'esportazione dei dati."); }
   };
 
   const handleImportData = async (e) => {
     if (!user || !e.target.files[0]) return;
     const file = e.target.files[0];
-    
-    if (!confirm("ATTENZIONE: Stai per importare dei dati. I dati importati verranno AGGIUNTI a quelli esistenti. Vuoi procedere?")) {
-      e.target.value = null; // Reset input
-      return;
-    }
-
+    if (!confirm("ATTENZIONE: Stai per importare dei dati. I dati importati verranno AGGIUNTI a quelli esistenti. Vuoi procedere?")) { e.target.value = null; return; }
     setIsImporting(true);
     const reader = new FileReader();
-    
     reader.onload = async (event) => {
       try {
         const data = JSON.parse(event.target.result);
-        
-        // Simple validation
-        if (!data.clients || !data.sites || !data.jobs) {
-          throw new Error("Formato file non valido");
-        }
-
+        if (!data.clients || !data.sites || !data.jobs) throw new Error("Formato file non valido");
         const batch = writeBatch(db);
         const basePath = `artifacts/${appId}/users/${user.uid}`;
         let count = 0;
-
         const addToBatch = (collectionName, items) => {
           items.forEach(item => {
             const { id, ...docData } = item;
@@ -379,22 +333,14 @@ export default function ElectroManager() {
             count++;
           });
         };
-
         addToBatch('clients', data.clients);
         addToBatch('sites', data.sites);
         addToBatch('jobs', data.jobs);
-
         await batch.commit();
         alert(`Ripristino completato! ${count} elementi elaborati.`);
-      } catch (err) {
-        console.error(err);
-        alert("Errore durante l'importazione: " + err.message);
-      } finally {
-        setIsImporting(false);
-        e.target.value = null;
-      }
+      } catch (err) { console.error(err); alert("Errore durante l'importazione: " + err.message); } 
+      finally { setIsImporting(false); e.target.value = null; }
     };
-    
     reader.readAsText(file);
   };
 
@@ -403,13 +349,11 @@ export default function ElectroManager() {
   };
   
   const handleSave = async () => {
+    if (!user) return;
     setIsSaving(true);
-    const currentUser = getAuthenticatedUser();
-    if (!currentUser) { setIsSaving(false); return; }
-
     let collectionName = view; 
     if (view === 'dashboard') collectionName = 'clients'; 
-    const collRef = collection(db, 'artifacts', appId, 'users', currentUser.uid, collectionName);
+    const collRef = collection(db, 'artifacts', appId, 'users', user.uid, collectionName);
     const payload = { ...formData, createdAt: modalMode === 'add' ? serverTimestamp() : undefined, status: formData.status || 'todo' };
     if (modalMode === 'edit') delete payload.createdAt;
     if (view === 'sites' && modalMode === 'add') { payload.clientId = selectedClient.id; payload.clientName = selectedClient.name; }
@@ -417,7 +361,7 @@ export default function ElectroManager() {
 
     try {
       if (modalMode === 'add') await addDoc(collRef, payload);
-      else await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, collectionName, formData.id), payload);
+      else await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, collectionName, formData.id), payload);
       setIsModalOpen(false); setFormData({});
     } catch (e) { console.error(e); alert("Errore nel salvataggio. Riprova."); } 
     finally { setIsSaving(false); }
@@ -431,48 +375,32 @@ export default function ElectroManager() {
   };
 
   const executeDelete = async () => {
-    if (!deleteConfirm.id) return;
-    const currentUser = getAuthenticatedUser();
-    if (!currentUser) return;
-
+    if (!deleteConfirm.id || !user) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, deleteConfirm.collection, deleteConfirm.id));
-      
+      await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, deleteConfirm.collection, deleteConfirm.id));
       if (deleteConfirm.collection === 'clients') {
         const sitesToDelete = rawSites.filter(s => s.clientId === deleteConfirm.id);
         for (const s of sitesToDelete) {
-           await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'sites', s.id));
+           await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'sites', s.id));
            const jobsToDelete = rawJobs.filter(j => j.siteId === s.id);
-           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
+           for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
         }
       }
       else if (deleteConfirm.collection === 'sites') {
         const jobsToDelete = rawJobs.filter(j => j.siteId === deleteConfirm.id);
-        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', j.id));
+        for (const j of jobsToDelete) await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', j.id));
       }
-
       setDeleteConfirm({ isOpen: false, collection: null, id: null, title: '' }); 
-    } catch (err) {
-      console.error(err);
-      alert("Errore durante l'eliminazione.");
-    }
+    } catch (err) { console.error(err); alert("Errore durante l'eliminazione."); }
   };
   
   const handleUpdateStatus = async (jobId, newStatus) => {
-    const currentUser = getAuthenticatedUser();
-    if (!currentUser) return;
-
+    if (!user) return;
     if (newStatus === 'done') {
       const job = rawJobs.find(j => j.id === jobId);
       if (!job.endDate) { alert("⚠️ Data Fine Lavori obbligatoria per completare."); return; }
     }
-    
-    try {
-      await updateDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'jobs', jobId), { status: newStatus });
-    } catch (e) {
-      console.error(e);
-      alert("Errore di connessione. Riprova.");
-    }
+    await updateDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'jobs', jobId), { status: newStatus });
   };
 
   const jumpToJob = (job) => {
@@ -483,56 +411,190 @@ export default function ElectroManager() {
 
   // --- Views ---
 
-  // LOGIN SCREEN
+  const renderReportsView = () => {
+    let filteredReportJobs = validJobs;
+
+    // Filter by Type Logic
+    // - execution: Todo, Progress
+    // - materials: Order Material, Material Ordered
+    // - blocked: Waiting Material, Suspended
+    // - urgent: Only Priority jobs (any status except done/cancelled)
+
+    if (reportType === 'execution') {
+      filteredReportJobs = filteredReportJobs.filter(j => j.status === 'todo' || j.status === 'progress');
+    } else if (reportType === 'materials') {
+      filteredReportJobs = filteredReportJobs.filter(j => j.status === 'order_material' || j.status === 'material_ordered');
+    } else if (reportType === 'blocked') {
+      filteredReportJobs = filteredReportJobs.filter(j => j.status === 'waiting_material' || j.status === 'suspended');
+    } else if (reportType === 'urgent') {
+      filteredReportJobs = filteredReportJobs.filter(j => j.isPriority && j.status !== 'done' && j.status !== 'cancelled');
+    }
+
+    // Filter by Timeframe
+    if (reportTimeframe === 'month') {
+      const now = new Date();
+      filteredReportJobs = filteredReportJobs.filter(j => {
+        const d = j.createdAt?.seconds ? new Date(j.createdAt.seconds * 1000) : new Date();
+        return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
+      });
+    } else if (reportTimeframe === 'year') {
+      const now = new Date();
+      filteredReportJobs = filteredReportJobs.filter(j => {
+        const d = j.createdAt?.seconds ? new Date(j.createdAt.seconds * 1000) : new Date();
+        return d.getFullYear() === now.getFullYear();
+      });
+    }
+
+    const priorityCount = filteredReportJobs.filter(j => j.isPriority).length;
+    const blockedCount = filteredReportJobs.filter(j => j.status === 'waiting_material' || j.status === 'suspended').length;
+
+    return (
+      <div className="space-y-4 pb-24 animate-in slide-in-from-right duration-200 bg-white min-h-screen">
+        <div className="bg-slate-900 sticky top-0 z-20 p-4 text-white flex items-center justify-between shadow-md print:hidden">
+          <div className="flex items-center gap-3">
+            <button onClick={() => navigateTo('dashboard')} className="p-2 -ml-2 hover:bg-slate-800 rounded-full"><ArrowLeft size={20} /></button>
+            <h2 className="font-bold text-lg">Reportistica</h2>
+          </div>
+          <button onClick={() => window.print()} className="p-2 bg-slate-800 rounded-full hover:text-blue-400"><Printer size={20} /></button>
+        </div>
+
+        <div className="px-4 print:p-0">
+          {/* Controls */}
+          <div className="flex flex-col gap-3 mb-6 print:hidden">
+            <div className="flex gap-2 overflow-x-auto pb-2">
+               {/* Time Filters */}
+               <button onClick={() => setReportTimeframe('all')} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${reportTimeframe === 'all' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>Tutto</button>
+               <button onClick={() => setReportTimeframe('month')} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${reportTimeframe === 'month' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>Questo Mese</button>
+               <button onClick={() => setReportTimeframe('year')} className={`px-3 py-1.5 rounded-lg text-xs font-bold border ${reportTimeframe === 'year' ? 'bg-slate-800 text-white' : 'bg-white text-slate-600'}`}>Quest'Anno</button>
+            </div>
+            <div className="flex gap-2 overflow-x-auto pb-2">
+               {/* Type Filters */}
+               <button onClick={() => setReportType('execution')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'execution' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>Da Eseguire</button>
+               <button onClick={() => setReportType('urgent')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'urgent' ? 'bg-red-100 text-red-700' : 'bg-slate-100 text-slate-500'}`}>Urgenti</button>
+               <button onClick={() => setReportType('materials')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'materials' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'}`}>Materiali</button>
+               <button onClick={() => setReportType('blocked')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'blocked' ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>Bloccati</button>
+            </div>
+          </div>
+
+          {/* Summary Cards */}
+          <div className="grid grid-cols-2 gap-3 mb-6 print:hidden">
+             <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+               <div className="text-slate-400 text-xs font-bold uppercase">Prioritari</div>
+               <div className="text-2xl font-bold text-red-600 flex items-center gap-2">{priorityCount} <Flame size={16}/></div>
+             </div>
+             <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+               <div className="text-slate-400 text-xs font-bold uppercase">In Attesa</div>
+               <div className="text-2xl font-bold text-indigo-600 flex items-center gap-2">{blockedCount} <Hourglass size={16}/></div>
+             </div>
+          </div>
+
+          {/* Printable List */}
+          <div className="space-y-4 print:space-y-2">
+            <div className="hidden print:block mb-4 border-b pb-2">
+              <h1 className="text-2xl font-bold text-black">{APP_NAME} Report</h1>
+              <p className="text-sm text-gray-500">Generato il {new Date().toLocaleDateString()}</p>
+              <div className="flex justify-between mt-2">
+                 <span className="font-bold uppercase">Report: {reportType === 'execution' ? 'Da Eseguire' : reportType === 'urgent' ? 'Urgenti' : reportType}</span>
+                 <span className="font-bold uppercase">Totale: {filteredReportJobs.length}</span>
+              </div>
+            </div>
+
+            {filteredReportJobs.length === 0 ? <div className="text-center py-10 text-slate-400">Nessun lavoro trovato per questi filtri.</div> : 
+              filteredReportJobs.map((job) => {
+                const status = STATUS_TYPES.find(s => s.id === job.status) || STATUS_TYPES[0];
+                return (
+                  <div key={job.id} className="bg-white border border-slate-200 rounded-xl p-4 print:border-black print:rounded-none print:border-0 print:border-b flex flex-col gap-2">
+                    <div className="flex justify-between items-start">
+                      <div className="text-xs text-slate-500 font-bold uppercase tracking-wider print:text-black">{job.clientName || 'Cliente'} &bull; {job.siteName || 'Cantiere'}</div>
+                      <div className="flex gap-2 print:hidden">
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${status.color.split(' ')[0]} ${status.color.split(' ')[1]}`}>{status.label}</span>
+                      </div>
+                    </div>
+                    
+                    <div className="flex items-center gap-2">
+                      {job.isPriority && <Flame size={16} className="text-red-500 print:text-black" />}
+                      <h3 className="font-bold text-lg text-slate-900 leading-tight print:text-black">{job.description}</h3>
+                    </div>
+
+                    {job.offerRef && <div className="text-xs font-mono bg-slate-100 inline-block px-2 py-1 rounded w-fit print:bg-transparent print:p-0 print:border print:border-gray-400">RIF: {job.offerRef}</div>}
+
+                    {job.technicianNotes && (
+                      <div className="bg-slate-50 p-3 rounded-lg text-sm text-slate-700 print:bg-transparent print:p-0 print:text-xs print:italic mt-1">
+                        <span className="font-bold text-xs block mb-1">NOTE:</span> {job.technicianNotes}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            }
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  const renderModalContent = () => (
+    <div className="space-y-4 pt-2">
+      {(view === 'dashboard' || view === 'clients') && <Input label="Nome Cliente" value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Es. Rossi SRL" />}
+      {view === 'sites' && <Input label="Nome Cantiere" value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Es. Sede Principale" />}
+      {view === 'jobs' && (
+        <>
+          <div className="grid grid-cols-2 gap-2 mb-2">
+            {JOB_TYPES.map(t => (
+              <button key={t.id} onClick={() => setFormData({...formData, type: t.id})} className={`p-2 border rounded-lg text-xs flex flex-col items-center gap-1 ${formData.type === t.id ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'text-slate-500'}`}>{t.icon} {t.label}</button>
+            ))}
+          </div>
+          
+          <div className="flex items-center gap-2 bg-red-50 p-3 rounded-xl border border-red-100">
+             <input 
+               type="checkbox" 
+               id="priorityCheck"
+               checked={formData.isPriority || false}
+               onChange={e => setFormData({...formData, isPriority: e.target.checked})}
+               className="w-5 h-5 text-red-600 rounded focus:ring-red-500"
+             />
+             <label htmlFor="priorityCheck" className="flex items-center gap-2 text-sm font-bold text-red-700">
+               <Flame size={16} fill="currentColor" />
+               Contrassegna come Prioritario
+             </label>
+          </div>
+
+          <Input label="Descrizione" value={formData.description || ''} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="Es. Installazione..." />
+          <Input label="Rif. Offerta" value={formData.offerRef || ''} onChange={e => setFormData({...formData, offerRef: e.target.value})} placeholder="Es. OFF-001" />
+
+          <div className="grid grid-cols-2 gap-3">
+             <Input label="Inizio Lavori" type="date" value={formData.startDate || ''} onChange={e => setFormData({...formData, startDate: e.target.value})} />
+             <Input label="Fine Lavori" type="date" value={formData.endDate || ''} onChange={e => setFormData({...formData, endDate: e.target.value})} />
+          </div>
+          <textarea className="w-full p-3 border rounded-xl bg-slate-50 text-sm h-24" placeholder="Note tecniche..." value={formData.technicianNotes || ''} onChange={e => setFormData({...formData, technicianNotes: e.target.value})} />
+        </>
+      )}
+      <Button onClick={handleSave} className="w-full mt-4" disabled={isSaving}>{isSaving ? 'Salvataggio...' : 'Salva'}</Button>
+    </div>
+  );
+
+  // ... (Login view & Wrappers remain same)
+
   if (!user) {
     return (
       <div className="h-screen bg-slate-900 flex flex-col items-center justify-center p-6 text-white animate-in fade-in">
         <div className="bg-blue-600 p-4 rounded-full mb-6 shadow-lg shadow-blue-500/50"><Lock size={48} /></div>
         <h1 className="text-3xl font-bold mb-2">{APP_NAME}</h1>
         <p className="text-slate-400 mb-8">{isRegistering ? 'Crea nuovo account' : 'Accedi al gestionale'}</p>
-        
         <form onSubmit={handleAuth} className="w-full max-w-xs space-y-4">
           <div className="bg-slate-800 rounded-xl p-1 border border-slate-700">
-            <div className="flex items-center px-3 border-b border-slate-700/50">
-              <Mail size={18} className="text-slate-500" />
-              <input 
-                type="email" 
-                required
-                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
-                placeholder="Email" 
-                value={email} 
-                onChange={(e) => setEmail(e.target.value)}
-              />
-            </div>
-            <div className="flex items-center px-3">
-              <Key size={18} className="text-slate-500" />
-              <input 
-                type="password" 
-                required
-                className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" 
-                placeholder="Password" 
-                value={password} 
-                onChange={(e) => setPassword(e.target.value)}
-              />
-            </div>
+            <div className="flex items-center px-3 border-b border-slate-700/50"><Mail size={18} className="text-slate-500" /><input type="email" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+            <div className="flex items-center px-3"><Key size={18} className="text-slate-500" /><input type="password" required className="w-full bg-transparent border-none p-3 focus:ring-0 text-white placeholder-slate-500 outline-none" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
           </div>
-
           {authError && <div className="text-red-400 text-sm text-center bg-red-900/30 p-2 rounded-lg border border-red-900/50">{authError}</div>}
-
           <Button type="submit" className="w-full py-4 text-lg font-bold">{isRegistering ? 'Registrati' : 'Accedi'}</Button>
-          
-          <button 
-            type="button"
-            onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }}
-            className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors"
-          >
-            {isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}
-          </button>
+          <button type="button" onClick={() => { setIsRegistering(!isRegistering); setAuthError(''); }} className="w-full text-center text-sm text-slate-400 mt-4 hover:text-white transition-colors">{isRegistering ? 'Hai già un account? Accedi' : 'Non hai un account? Registrati'}</button>
         </form>
       </div>
     );
   }
 
+  // Dashboard, Settings, Clients, Sites, Jobs Views render functions (same as previous, just ensure they are included in final file)
   const renderDashboardView = () => (
     <div className="space-y-6 pb-24 animate-in fade-in">
       <div className="bg-slate-900 -m-4 mb-2 p-6 pb-8 rounded-b-3xl text-white">
@@ -595,7 +657,7 @@ export default function ElectroManager() {
         <div className="bg-slate-50 p-6 rounded-2xl border border-slate-200 text-center">
           <div className="bg-blue-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-blue-600"><User size={32} /></div>
           <h3 className="font-bold text-lg text-slate-800">Utente Connesso</h3>
-          <p className="text-slate-500 text-sm mb-6">{user.email || 'Utente Ospite (Anonimo)'}</p>
+          <p className="text-slate-500 text-sm mb-6">{user.email}</p>
           <Button onClick={handleLogout} className="w-full bg-red-50 text-red-600 hover:bg-red-100 shadow-none border border-red-200">Disconnetti</Button>
         </div>
 
@@ -607,21 +669,9 @@ export default function ElectroManager() {
           <p className="text-sm text-slate-500 mb-6">Scarica una copia di backup dei tuoi dati o ripristina un backup precedente.</p>
           
           <div className="flex flex-col gap-3">
-            <button 
-              onClick={handleExportData}
-              className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 transition-colors border border-blue-100"
-            >
-              <Download size={18} /> Scarica Backup Dati (.json)
-            </button>
-
+            <button onClick={handleExportData} className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-blue-50 text-blue-700 font-bold hover:bg-blue-100 transition-colors border border-blue-100"><Download size={18} /> Scarica Backup Dati (.json)</button>
             <div className="relative">
-               <input 
-                 type="file" 
-                 accept=".json"
-                 onChange={handleImportData}
-                 className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
-                 disabled={isImporting}
-               />
+               <input type="file" accept=".json" onChange={handleImportData} className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" disabled={isImporting} />
                <button className="flex items-center justify-center gap-2 w-full py-4 rounded-xl bg-slate-50 text-slate-700 font-bold hover:bg-slate-100 transition-colors border border-slate-200">
                  {isImporting ? <RefreshCw size={18} className="animate-spin" /> : <Upload size={18} />}
                  {isImporting ? "Ripristino in corso..." : "Ripristina da Backup"}
@@ -633,52 +683,6 @@ export default function ElectroManager() {
       </div>
     </div>
   );
-
-  const renderReportsView = () => {
-    let filteredReportJobs = [];
-    if (reportType === 'materials') filteredReportJobs = validJobs.filter(j => j.status === 'order_material');
-    else if (reportType === 'quotes') filteredReportJobs = validJobs.filter(j => j.status === 'quote_needed');
-    else if (reportType === 'active') filteredReportJobs = validJobs.filter(j => j.status !== 'done' && j.status !== 'cancelled');
-
-    return (
-      <div className="space-y-4 pb-24 animate-in slide-in-from-right duration-200 bg-white min-h-screen">
-        <div className="bg-slate-900 sticky top-0 z-20 p-4 text-white flex items-center justify-between shadow-md print:hidden">
-          <div className="flex items-center gap-3">
-            <button onClick={() => navigateTo('dashboard')} className="p-2 -ml-2 hover:bg-slate-800 rounded-full"><ArrowLeft size={20} /></button>
-            <h2 className="font-bold text-lg">Reportistica</h2>
-          </div>
-          <button onClick={() => window.print()} className="p-2 bg-slate-800 rounded-full hover:text-blue-400"><Printer size={20} /></button>
-        </div>
-        <div className="px-4 print:p-0">
-          <div className="flex gap-2 mb-6 overflow-x-auto pb-2 print:hidden">
-            <button onClick={() => setReportType('materials')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'materials' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-500'}`}>Materiali ({validJobs.filter(j => j.status === 'order_material').length})</button>
-            <button onClick={() => setReportType('quotes')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'quotes' ? 'bg-blue-100 text-blue-700' : 'bg-slate-100 text-slate-500'}`}>Preventivi ({validJobs.filter(j => j.status === 'quote_needed').length})</button>
-            <button onClick={() => setReportType('active')} className={`px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap ${reportType === 'active' ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-500'}`}>Tutti Attivi ({validJobs.filter(j => j.status !== 'done' && j.status !== 'cancelled').length})</button>
-          </div>
-          <div className="space-y-4 print:space-y-2">
-            <div className="hidden print:block mb-4 border-b pb-2">
-              <h1 className="text-2xl font-bold text-black">{APP_NAME} Report</h1>
-              <p className="text-sm text-gray-500">Generato il {new Date().toLocaleDateString()}</p>
-              <p className="text-sm font-bold uppercase mt-2">{reportType === 'materials' ? 'Lista Materiali da Ordinare' : reportType === 'quotes' ? 'Lista Preventivi da Fare' : 'Lista Lavori Attivi'}</p>
-            </div>
-            {filteredReportJobs.length === 0 ? <div className="text-center py-10 text-slate-400">Nessun dato per questo report.</div> : 
-              filteredReportJobs.map((job) => (
-                <div key={job.id} className="bg-white border border-slate-200 rounded-xl p-4 print:border-black print:rounded-none print:border-0 print:border-b">
-                  <div className="flex justify-between items-start mb-2">
-                    <div className="text-xs text-slate-500 font-bold uppercase tracking-wider mb-1 print:text-black">{job.clientName || 'Cliente'} &bull; {job.siteName || 'Cantiere'}</div>
-                    {job.isPriority && <span className="text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded font-bold print:border print:border-black print:text-black">PRIORITARIO</span>}
-                  </div>
-                  <h3 className="font-bold text-lg text-slate-900 leading-tight mb-2 print:text-black">{job.description}</h3>
-                  {job.technicianNotes && <div className="bg-slate-50 p-3 rounded-lg text-sm text-slate-700 print:bg-transparent print:p-0 print:text-xs print:italic"><span className="font-bold text-xs block mb-1">NOTE:</span> {job.technicianNotes}</div>}
-                  {job.offerRef && <div className="mt-2 text-xs font-mono bg-slate-100 inline-block px-2 py-1 rounded print:bg-transparent print:p-0">RIF: {job.offerRef}</div>}
-                </div>
-              ))
-            }
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const renderClientsView = () => (
     <div className="space-y-4 pb-24 animate-in slide-in-from-right duration-200">
@@ -810,32 +814,6 @@ export default function ElectroManager() {
         })}
       </div>
       {selectedSite && <div className="fixed bottom-6 right-6"><button onClick={() => { setFormData({ status: 'todo', type: 'electric' }); setModalMode('add'); setIsModalOpen(true); }} className="bg-indigo-600 text-white p-4 rounded-full shadow-lg shadow-indigo-300 hover:bg-indigo-700 transition-transform hover:scale-105 active:scale-95"><Plus size={24} /></button></div>}
-    </div>
-  );
-
-  const renderModalContent = () => (
-    <div className="space-y-4 pt-2">
-      {(view === 'dashboard' || view === 'clients') && <Input label="Nome Cliente" value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Es. Rossi SRL" />}
-      {view === 'sites' && <Input label="Nome Cantiere" value={formData.name || ''} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="Es. Sede Principale" />}
-      {view === 'jobs' && (
-        <>
-          <div className="grid grid-cols-2 gap-2 mb-2">
-            {JOB_TYPES.map(t => <button key={t.id} onClick={() => setFormData({...formData, type: t.id})} className={`p-2 border rounded-lg text-xs flex flex-col items-center gap-1 ${formData.type === t.id ? 'bg-indigo-50 border-indigo-500 text-indigo-700' : 'text-slate-500'}`}>{t.icon} {t.label}</button>)}
-          </div>
-          <div className="flex items-center gap-2 bg-red-50 p-3 rounded-xl border border-red-100">
-             <input type="checkbox" id="priorityCheck" checked={formData.isPriority || false} onChange={e => setFormData({...formData, isPriority: e.target.checked})} className="w-5 h-5 text-red-600 rounded focus:ring-red-500" />
-             <label htmlFor="priorityCheck" className="flex items-center gap-2 text-sm font-bold text-red-700"><Flame size={16} fill="currentColor" /> Contrassegna come Prioritario</label>
-          </div>
-          <Input label="Descrizione" value={formData.description || ''} onChange={e => setFormData({...formData, description: e.target.value})} placeholder="Es. Installazione..." />
-          <Input label="Rif. Offerta" value={formData.offerRef || ''} onChange={e => setFormData({...formData, offerRef: e.target.value})} placeholder="Es. OFF-2024-001" />
-          <div className="grid grid-cols-2 gap-3">
-             <Input label="Inizio Lavori" type="date" value={formData.startDate || ''} onChange={e => setFormData({...formData, startDate: e.target.value})} />
-             <Input label="Fine Lavori" type="date" value={formData.endDate || ''} onChange={e => setFormData({...formData, endDate: e.target.value})} />
-          </div>
-          <textarea className="w-full p-3 border rounded-xl bg-slate-50 text-sm h-24" placeholder="Note tecniche..." value={formData.technicianNotes || ''} onChange={e => setFormData({...formData, technicianNotes: e.target.value})} />
-        </>
-      )}
-      <Button onClick={handleSave} className="w-full mt-4" disabled={isSaving}>{isSaving ? 'Salvataggio...' : 'Salva'}</Button>
     </div>
   );
 
