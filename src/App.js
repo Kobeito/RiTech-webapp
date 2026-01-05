@@ -57,14 +57,30 @@ import {
 } from 'firebase/firestore';
 
 // --- Firebase Configuration ---
-const firebaseConfig = JSON.parse(__firebase_config);
+
+// 1. PER L'ANTEPRIMA QUI IN CHAT (Lascia questa riga attiva per vedere l'app ora)
+// const firebaseConfig = JSON.parse(__firebase_config);
+
+// 2. PER VERCEL / PUBBLICAZIONE (Quando carichi su GitHub/Vercel):
+// -> Commenta la riga sopra (metti // davanti)
+// -> Scommenta il blocco qui sotto (togli /* e */) e inserisci le tue chiavi vere
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAOwypL0k7iF1IMDzW5f83ZXu_UjCvKRAE",
+  authDomain: "ritech-app.firebaseapp.com",
+  projectId: "ritech-app",
+  storageBucket: "ritech-app.firebasestorage.app",
+  messagingSenderId: "223810621520",
+  appId: "1:223810621520:web:585e26a97ceb0dd2264155"
+};
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'electro-manager-app';
 
 // --- APP CONFIGURATION ---
-const APP_NAME = "RiTech APP"; // <--- MODIFICA QUI IL NOME DELL'APP
+const APP_NAME = "ElectroManager"; // <--- MODIFICA QUI IL NOME DELL'APP
 
 // --- Constants & Utilities ---
 const JOB_TYPES = [
@@ -165,6 +181,7 @@ export default function ElectroManager() {
   // Auth & Persistence
   useEffect(() => {
     const initAuth = async () => {
+      // Tentativo di abilitare la persistenza offline
       try {
         await enableIndexedDbPersistence(db);
       } catch (err) {
