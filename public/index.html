@@ -2,27 +2,25 @@
 <html lang="it">
   <head>
     <meta charset="utf-8" />
-    <!-- Icona di base per browser desktop -->
-    <link rel="icon" href="%PUBLIC_URL%/favicon.ico" />
+    <!-- Icona di base -->
+    <link rel="icon" href="/favicon.ico" />
     
-    <!-- 1. BLOCCA LO ZOOM: Fondamentale per sembrare un'app nativa su tutti i dispositivi -->
+    <!-- 1. BLOCCA LO ZOOM -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     
-    <!-- Colore della barra di stato di Chrome su Android -->
+    <!-- Colore della barra di stato -->
     <meta name="theme-color" content="#1e293b" />
     <meta name="description" content="Gestionale Elettricisti" />
 
     <!-- 2. CONFIGURAZIONE ANDROID (PWA Standard) -->
-    <!-- Il file manifest contiene tutte le info per Android: icone, nome app, avvio a tutto schermo -->
-    <!-- CORREZIONE: Usiamo %PUBLIC_URL% per essere sicuri che React trovi il file -->
-    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
+    <!-- CORREZIONE: Usiamo la barra / diretta per trovare il file sicuramente -->
+    <link rel="manifest" href="/manifest.json?v=3" />
     
-    <!-- Icone ad alta risoluzione per Android/Chrome (Backup se il manifest tarda a caricare) -->
+    <!-- Icone ad alta risoluzione -->
     <link rel="icon" type="image/png" sizes="192x192" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
     <link rel="icon" type="image/png" sizes="512x512" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
 
     <!-- 3. CONFIGURAZIONE APPLE (iOS) -->
-    <!-- Apple richiede questi tag specifici perché non legge tutto dal manifest -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="RiTech">
