@@ -14,7 +14,8 @@
 
     <!-- 2. CONFIGURAZIONE ANDROID (PWA Standard) -->
     <!-- Il file manifest contiene tutte le info per Android: icone, nome app, avvio a tutto schermo -->
-    <link rel="manifest" href="/manifest.json" />
+    <!-- CORREZIONE: Usiamo %PUBLIC_URL% per essere sicuri che React trovi il file -->
+    <link rel="manifest" href="%PUBLIC_URL%/manifest.json" />
     
     <!-- Icone ad alta risoluzione per Android/Chrome (Backup se il manifest tarda a caricare) -->
     <link rel="icon" type="image/png" sizes="192x192" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
@@ -24,13 +25,13 @@
     <!-- Apple richiede questi tag specifici perché non legge tutto dal manifest -->
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="RiTech APP">
+    <meta name="apple-mobile-web-app-title" content="ElectroMgr">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/3659/3659929.png">
 
     <!-- 4. GRAFICA (Tailwind CSS) -->
     <script src="https://cdn.tailwindcss.com"></script>
 
-    <title>RiTech APP</title>
+    <title>ElectroManager</title>
   </head>
   <body>
     <noscript>È necessario abilitare JavaScript per usare questa app.</noscript>
